@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Optimizely experiment fake data",
+  title: "Optimizely Experimentation Data Helper",
   description:
     "Load an Optimizely experiment and send batched demo visitors to logx for Results-page testing.",
 };

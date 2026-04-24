@@ -14,8 +14,43 @@ type LoadResult = {
 
 const BATCH_SIZE = 1000;
 const BATCH_DELAY_MS = 2000;
-const REFERENCE =
-  "https://github.com/theodorecharles/opti-demo-claude-commands/blob/main/commands/fake-data.md";
+
+function TokenVisibilityIcon({ visible }: { visible: boolean }) {
+  if (visible) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.75}
+        className="size-5"
+        aria-hidden
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
+        />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M1 1l22 22" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      className="size-5"
+      aria-hidden
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 export function FakeDataForm() {
   const [token, setToken] = useState("");
@@ -26,6 +61,11 @@ export function FakeDataForm() {
   const [campaigns, setCampaigns] = useState<NamedEntity[]>([]);
   const [experiments, setExperiments] = useState<NamedEntity[]>([]);
   const [manualIds, setManualIds] = useState(false);
+  const [revealToken, setRevealToken] = useState(false);
+  const [projectExperiments, setProjectExperiments] = useState<NamedEntity[]>([]);
+  const [afterDiscovery, setAfterDiscovery] = useState(false);
+  const [pickerKind, setPickerKind] = useState<"campaign_chain" | "project_experiment" | null>(null);
+  const [discoveryMode, setDiscoveryMode] = useState<string | null>(null);
 
   const [visitorCount, setVisitorCount] = useState("500");
   const [conversionProbability, setConversionProbability] = useState("0.35");
@@ -35,6 +75,67 @@ export function FakeDataForm() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sendLog, setSendLog] = useState<string[]>([]);
   const [busy, setBusy] = useState<"campaigns" | "experiments" | "load" | "send" | null>(null);
+  const [accountProjects, setAccountProjects] = useState<NamedEntity[]>([]);
+  const [projectListBusy, setProjectListBusy] = useState(false);
+  const [projectListError, setProjectListError] = useState<string | null>(null);
+
+  const resetAfterProjectIdChange = useCallback(() => {
+    setCampaigns([]);
+    setProjectExperiments([]);
+    setExperiments([]);
+    setCampaignId("");
+    setExperimentId("");
+    setLoaded(null);
+    setAfterDiscovery(false);
+    setPickerKind(null);
+    setDiscoveryMode(null);
+  }, []);
+
+  const onProjectIdInput = useCallback(
+    (value: string) => {
+      setProjectId(value);
+      resetAfterProjectIdChange();
+    },
+    [resetAfterProjectIdChange],
+  );
+
+  const loadProjectList = useCallback(async () => {
+    setProjectListError(null);
+    setProjectListBusy(true);
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token.trim() || undefined }),
+      });
+      const data = (await res.json()) as { projects?: NamedEntity[]; error?: string };
+      if (!res.ok) {
+        setProjectListError(data.error ?? `HTTP ${res.status}`);
+        setAccountProjects([]);
+        return;
+      }
+      setAccountProjects(data.projects ?? []);
+    } catch (e) {
+      setProjectListError(e instanceof Error ? e.message : "Request failed");
+      setAccountProjects([]);
+    } finally {
+      setProjectListBusy(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/env-token")
+      .then((r) => r.json())
+      .then((d: { token?: string | null }) => {
+        if (cancelled || !d?.token) return;
+        setToken((prev) => (prev.trim() ? prev : d.token!));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const toggleMetric = (key: string) => {
     setSelectedKeys((prev) => {
@@ -48,11 +149,15 @@ export function FakeDataForm() {
   const loadCampaigns = useCallback(async () => {
     setLoadError(null);
     setCampaigns([]);
+    setProjectExperiments([]);
     setExperiments([]);
     setCampaignId("");
     setExperimentId("");
     setLoaded(null);
     setSendLog([]);
+    setAfterDiscovery(false);
+    setPickerKind(null);
+    setDiscoveryMode(null);
     setBusy("campaigns");
     try {
       const res = await fetch("/api/campaigns", {
@@ -63,17 +168,39 @@ export function FakeDataForm() {
           projectId: projectId.trim(),
         }),
       });
-      const data = (await res.json()) as { campaigns?: NamedEntity[]; error?: string };
+      const data = (await res.json()) as {
+        campaigns?: NamedEntity[];
+        projectExperiments?: NamedEntity[];
+        mode?: string;
+        error?: string;
+      };
       if (!res.ok) {
         setLoadError(data.error ?? `HTTP ${res.status}`);
         return;
       }
+      const mode = data.mode ?? "empty";
+      setDiscoveryMode(mode);
       setCampaigns(data.campaigns ?? []);
-      if (!(data.campaigns?.length)) {
+      setProjectExperiments(data.projectExperiments ?? []);
+      setAfterDiscovery(true);
+
+      if (mode === "experiments_first") {
+        setPickerKind("project_experiment");
         setLoadError(
-          "No campaigns returned for this project. Check the project ID and token scope, or use “Enter IDs manually”.",
+          (data.projectExperiments?.length ?? 0) > 0
+            ? null
+            : "No project experiments found. Use manual ID entry or check the project ID and token read scope.",
         );
-      } else {
+        return;
+      }
+      if (mode === "empty") {
+        setPickerKind("campaign_chain");
+        setLoadError("No Web campaigns and no experiments for this project. Check project ID, token (Read scope), or use “Enter campaign & experiment IDs manually”.");
+        return;
+      }
+
+      setPickerKind("campaign_chain");
+      if ((data.campaigns?.length ?? 0) > 0) {
         setLoadError(null);
       }
     } catch (e) {
@@ -128,15 +255,59 @@ export function FakeDataForm() {
     [token],
   );
 
+  const pickProjectExperiment = useCallback(
+    async (experimentEid: string) => {
+      if (!experimentEid.trim()) {
+        setExperimentId("");
+        setCampaignId("");
+        return;
+      }
+      setExperimentId(experimentEid);
+      setBusy("experiments");
+      setLoadError(null);
+      try {
+        const res = await fetch("/api/experiment-peek", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: token.trim() || undefined,
+            experimentId: experimentEid.trim(),
+          }),
+        });
+        const data = (await res.json()) as { campaignId?: string | null; error?: string };
+        if (!res.ok) {
+          setLoadError(data.error ?? `HTTP ${res.status}`);
+          setCampaignId("");
+          return;
+        }
+        setCampaignId(data.campaignId?.trim() ?? "");
+        if (!data.campaignId) {
+          setLoadError(
+            "This experiment has no campaign_id in the API. Paste the campaign ID from your Results URL, or use manual ID entry.",
+          );
+        } else {
+          setLoadError(null);
+        }
+      } catch (e) {
+        setLoadError(e instanceof Error ? e.message : "Request failed");
+        setCampaignId("");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [token],
+  );
+
   useEffect(() => {
     if (manualIds) return;
+    if (pickerKind === "project_experiment") return;
     if (!campaignId.trim()) {
       setExperiments([]);
       setExperimentId("");
       return;
     }
     void loadExperimentsForCampaign(campaignId);
-  }, [campaignId, manualIds, loadExperimentsForCampaign]);
+  }, [campaignId, manualIds, loadExperimentsForCampaign, pickerKind]);
 
   const loadExperimentDetails = useCallback(async () => {
     setLoadError(null);
@@ -261,91 +432,92 @@ export function FakeDataForm() {
 
   const canLoadCampaigns = projectId.trim().length > 0 && busy === null;
   const canLoadDetails =
-    busy === null &&
-    projectId.trim().length > 0 &&
-    campaignId.trim().length > 0 &&
-    experimentId.trim().length > 0;
+    busy === null && projectId.trim().length > 0 && experimentId.trim().length > 0;
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-8 px-4 py-12">
-      <header className="space-y-2">
+      <header>
         <h1 className="text-2xl font-semibold tracking-tight text-[var(--foreground)]">
-          Optimizely fake results data
+          Optimizely Experimentation Data Helper
         </h1>
-        <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-          Order matches the Optimizely model:{" "}
-          <strong className="font-medium text-zinc-800 dark:text-zinc-200">project → campaigns → experiments</strong>
-          . The REST API lists{" "}
-          <a
-            className="text-blue-600 underline decoration-blue-600/40 underline-offset-2 hover:decoration-blue-600 dark:text-blue-400"
-            href="https://docs.developers.optimizely.com/web-experimentation/reference/list_campaigns"
-            target="_blank"
-            rel="noreferrer"
-          >
-            campaigns
-          </a>{" "}
-          for a project, then{" "}
-          <a
-            className="text-blue-600 underline decoration-blue-600/40 underline-offset-2 hover:decoration-blue-600 dark:text-blue-400"
-            href="https://docs.developers.optimizely.com/web-experimentation/reference/list_experiments"
-            target="_blank"
-            rel="noreferrer"
-          >
-            experiments
-          </a>{" "}
-          for a campaign. Then we load metric definitions and send to{" "}
-          <code className="rounded bg-zinc-200 px-1 py-0.5 text-xs dark:bg-zinc-800">logx.optimizely.com</code>{" "}
-          (see{" "}
-          <a
-            href={REFERENCE}
-            className="text-blue-600 underline decoration-blue-600/40 underline-offset-2 hover:decoration-blue-600 dark:text-blue-400"
-            target="_blank"
-            rel="noreferrer"
-          >
-            fake-data reference
-          </a>
-          ).
-        </p>
       </header>
 
       <section className="space-y-4 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Connection</h2>
-
         <label className="flex flex-col gap-1 text-sm">
           <span className="font-medium">1. Optimizely API token</span>
-          <span className="text-xs text-zinc-500">
-            Personal access token (Settings → API). Or set server env{" "}
-            <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">OPTIMIZELY_API_TOKEN</code> and leave this
-            blank.
-          </span>
-          <input
-            type="password"
-            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="Optional if env token is configured"
-            autoComplete="off"
-          />
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setRevealToken((r) => !r)}
+              className="absolute left-1.5 top-1/2 z-10 flex size-9 -translate-y-1/2 items-center justify-center rounded-md text-zinc-600 transition hover:bg-zinc-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+              aria-label={revealToken ? "Hide API token" : "Show API token"}
+              aria-pressed={revealToken}
+            >
+              <TokenVisibilityIcon visible={revealToken} />
+            </button>
+            <input
+              type={revealToken ? "text" : "password"}
+              className="w-full rounded-md border border-zinc-300 bg-white py-2 pl-11 pr-3 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Optimizely API token"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
         </label>
 
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium">2. Project ID</span>
-          <span className="text-xs text-zinc-500">Number after /projects/ in the app URL</span>
-          <input
-            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
-            value={projectId}
-            onChange={(e) => {
-              setProjectId(e.target.value);
-              setCampaigns([]);
-              setExperiments([]);
-              setCampaignId("");
-              setExperimentId("");
-              setLoaded(null);
-            }}
-            placeholder="5562178971893760"
-            autoComplete="off"
-          />
-        </label>
+        <div className="flex flex-col gap-2 text-sm">
+          <span className="font-medium">2. Project</span>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Load projects your API token can access, then pick from the list, or type a project ID (same number as in
+            <code className="mx-0.5 rounded bg-zinc-200 px-0.5 text-[11px] dark:bg-zinc-800">/projects/…</code> in the
+            app).
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void loadProjectList()}
+              disabled={projectListBusy}
+              className="rounded-lg border border-zinc-300 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 transition enabled:hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:enabled:hover:bg-zinc-700"
+            >
+              {projectListBusy ? "Loading projects…" : "Load project list"}
+            </button>
+            {accountProjects.length > 0 && (
+              <span className="text-xs text-zinc-500">{accountProjects.length} project(s) loaded</span>
+            )}
+          </div>
+          {projectListError && (
+            <p className="text-xs text-red-600 dark:text-red-400">{projectListError}</p>
+          )}
+          {accountProjects.length > 0 && (
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-zinc-500">Choose a project</span>
+              <select
+                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
+                value={accountProjects.some((p) => p.id === projectId) ? projectId : ""}
+                onChange={(e) => onProjectIdInput(e.target.value)}
+              >
+                <option value="">Select a project…</option>
+                {accountProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name.length > 80 ? `${p.name.slice(0, 77)}…` : p.name} ({p.id})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-zinc-500">Project ID (type or paste; must match a project you can access)</span>
+            <input
+              className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
+              value={projectId}
+              onChange={(e) => onProjectIdInput(e.target.value)}
+              placeholder="e.g. 5635667204505600"
+              autoComplete="off"
+            />
+          </label>
+        </div>
 
         <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
           <input
@@ -355,10 +527,14 @@ export function FakeDataForm() {
               const on = e.target.checked;
               setManualIds(on);
               setCampaigns([]);
+              setProjectExperiments([]);
               setExperiments([]);
               setCampaignId("");
               setExperimentId("");
               setLoaded(null);
+              setAfterDiscovery(false);
+              setPickerKind(null);
+              setDiscoveryMode(null);
               setLoadError(null);
             }}
           />
@@ -373,53 +549,104 @@ export function FakeDataForm() {
               disabled={!canLoadCampaigns}
               className="rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition enabled:hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:enabled:hover:bg-white"
             >
-              {busy === "campaigns" ? "Loading campaigns…" : "3. Load campaigns"}
+              {busy === "campaigns" ? "Loading…" : "3. Load campaigns and experiments"}
             </button>
 
-            <label className="flex flex-col gap-1 text-sm">
-              <span className="font-medium">4. Campaign</span>
-              <span className="text-xs text-zinc-500">Choose after campaigns load (same ID as in /results/…)</span>
-              <select
-                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
-                value={campaignId}
-                onChange={(e) => setCampaignId(e.target.value)}
-                disabled={campaigns.length === 0 || busy === "campaigns" || busy === "experiments"}
-              >
-                <option value="">Select a campaign…</option>
-                {campaigns.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name.length > 70 ? `${c.name.slice(0, 67)}…` : c.name} ({c.id})
-                  </option>
-                ))}
-              </select>
-            </label>
+            {afterDiscovery && discoveryMode === "inferred_from_experiments" && campaigns.length > 0 && (
+              <p className="text-xs text-blue-800 dark:text-blue-200">
+                Campaign list for this project was built from your experiments. Pick a campaign and an experiment
+                as usual.
+              </p>
+            )}
 
-            <label className="flex flex-col gap-1 text-sm">
-              <span className="font-medium">5. Experiment</span>
-              <span className="text-xs text-zinc-500">
-                Populated when a campaign is selected (same ID as in /experiments/…)
-              </span>
-              <select
-                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
-                value={experimentId}
-                onChange={(e) => setExperimentId(e.target.value)}
-                disabled={
-                  !campaignId.trim() ||
-                  busy === "experiments" ||
-                  busy === "campaigns" ||
-                  experiments.length === 0
-                }
-              >
-                <option value="">
-                  {busy === "experiments" ? "Loading experiments…" : "Select an experiment…"}
-                </option>
-                {experiments.map((ex) => (
-                  <option key={ex.id} value={ex.id}>
-                    {ex.name.length > 70 ? `${ex.name.slice(0, 67)}…` : ex.name} ({ex.id})
+            {afterDiscovery && pickerKind === "project_experiment" && projectExperiments.length > 0 && (
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="font-medium">4. Experiment</span>
+                <span className="text-xs text-zinc-500">
+                  No top-level Web campaigns; choose an experiment and we will resolve the campaign for logx.
+                </span>
+                <select
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
+                  value={experimentId}
+                  onChange={(e) => void pickProjectExperiment(e.target.value)}
+                  disabled={busy === "experiments" || busy === "campaigns"}
+                >
+                  <option value="">
+                    {busy === "experiments" ? "Resolving campaign…" : "Select an experiment…"}
                   </option>
-                ))}
-              </select>
-            </label>
+                  {projectExperiments.map((ex) => (
+                    <option key={ex.id} value={ex.id}>
+                      {ex.name.length > 70 ? `${ex.name.slice(0, 67)}…` : ex.name} ({ex.id})
+                    </option>
+                  ))}
+                </select>
+                {Boolean(campaignId) && (
+                  <p className="text-xs text-zinc-500">
+                    Campaign ID from API:{" "}
+                    <code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">{campaignId}</code>
+                  </p>
+                )}
+                {!campaignId && Boolean(experimentId) && (
+                  <div className="mt-1 flex flex-col gap-1 text-xs text-zinc-500">
+                    <span>Campaign ID (from your Results page — needed for logx if the API has no campaign_id)</span>
+                    <input
+                      className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
+                      value={campaignId}
+                      onChange={(e) => setCampaignId(e.target.value)}
+                      placeholder="Paste from /results/… in the URL"
+                      autoComplete="off"
+                    />
+                  </div>
+                )}
+              </label>
+            )}
+
+            {afterDiscovery && pickerKind === "campaign_chain" && (
+              <>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="font-medium">4. Campaign</span>
+                  <span className="text-xs text-zinc-500">From /results/… in the app URL (when available)</span>
+                  <select
+                    className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
+                    value={campaignId}
+                    onChange={(e) => setCampaignId(e.target.value)}
+                    disabled={campaigns.length === 0 || busy === "campaigns" || busy === "experiments"}
+                  >
+                    <option value="">{campaigns.length ? "Select a campaign…" : "No campaigns — use manual mode"}</option>
+                    {campaigns.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name.length > 70 ? `${c.name.slice(0, 67)}…` : c.name} ({c.id})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="font-medium">5. Experiment</span>
+                  <span className="text-xs text-zinc-500">Populated when a campaign is selected</span>
+                  <select
+                    className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-[var(--foreground)] dark:border-zinc-700 dark:bg-zinc-900"
+                    value={experimentId}
+                    onChange={(e) => setExperimentId(e.target.value)}
+                    disabled={
+                      !campaignId.trim() ||
+                      busy === "experiments" ||
+                      busy === "campaigns" ||
+                      experiments.length === 0
+                    }
+                  >
+                    <option value="">
+                      {busy === "experiments" ? "Loading experiments…" : "Select an experiment…"}
+                    </option>
+                    {experiments.map((ex) => (
+                      <option key={ex.id} value={ex.id}>
+                        {ex.name.length > 70 ? `${ex.name.slice(0, 67)}…` : ex.name} ({ex.id})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
           </>
         )}
 

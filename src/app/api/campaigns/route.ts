@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fetchCampaignsForProject } from "@/lib/optimizely";
+import { discoverProjectCampaigns } from "@/lib/optimizely";
 import { resolveOptimizelyToken } from "@/lib/resolve-token";
 
 export async function POST(req: Request) {
@@ -26,10 +26,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "projectId is required" }, { status: 400 });
   }
 
-  const out = await fetchCampaignsForProject(token, projectId);
+  const out = await discoverProjectCampaigns(token, projectId);
   if ("error" in out) {
     return NextResponse.json({ error: out.error }, { status: out.status ?? 502 });
   }
 
-  return NextResponse.json({ campaigns: out.campaigns });
+  return NextResponse.json({
+    campaigns: out.campaigns,
+    projectExperiments: out.projectExperiments,
+    mode: out.mode,
+  });
 }

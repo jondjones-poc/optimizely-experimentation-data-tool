@@ -5,10 +5,22 @@ export default function Home() {
     <div className="opt-app-shell flex-1">
       <header className="opt-brand-bar">
         <div className="opt-brand-bar-inner">
-          <span className="opt-brand-mark" aria-hidden>
-            O
-          </span>
-          <span className="opt-brand-title">Optimizely</span>
+          <img
+            className="opt-brand-mark"
+            src="/brand/optimizely-o.png"
+            alt=""
+            width={36}
+            height={36}
+            aria-hidden
+          />
+          <img
+            className="opt-brand-wordmark"
+            src="/brand/optimizely-wordmark.png"
+            alt="Optimizely"
+            width={168}
+            height={36}
+          />
+          <span className="opt-brand-tagline">You&apos;re free to grow</span>
         </div>
       </header>
       <FakeDataForm />

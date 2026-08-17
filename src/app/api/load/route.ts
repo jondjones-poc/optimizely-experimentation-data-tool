@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { fetchExperimentDetails, fetchProjectAccountId } from "@/lib/optimizely";
+import {
+  fetchExperimentDetails,
+  fetchExperimentResultsSummary,
+  fetchProjectAccountId,
+} from "@/lib/optimizely";
 import { resolveOptimizelyToken } from "@/lib/resolve-token";
 
 export async function POST(req: Request) {
@@ -41,9 +45,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: exp.error }, { status: exp.status ?? 502 });
   }
 
+  const results = await fetchExperimentResultsSummary(token, experimentId);
+  const experimentStartTime =
+    results && !("error" in results) ? results.meta?.startTime : undefined;
+
   return NextResponse.json({
     accountId: acc.accountId,
+    codeRevision: acc.codeRevision,
     variations: exp.variations,
     metrics: exp.metrics,
+    ...(experimentStartTime ? { experimentStartTime } : {}),
   });
 }

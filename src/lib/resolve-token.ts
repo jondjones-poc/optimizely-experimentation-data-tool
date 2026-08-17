@@ -1,6 +1,9 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+/** Browser / proxy header that supplies the Optimizely PAT for this app. */
+export const EXP_AUTH_TOKEN_HEADER = "ExpAuthToken";
+
 let envLocalCache: { mtimeMs: number; value: string } | null = null;
 
 /** Parse OPTIMIZELY_API_TOKEN from .env.local when process.env is empty (e.g. OS env set to blank overrides dotenv). */
@@ -45,11 +48,29 @@ export function getOptimizelyEnvToken(): string {
   return tokenFromEnvLocalFile();
 }
 
+/** Read ExpAuthToken from a browser/proxy-injected request header. */
+export function getExpAuthTokenHeader(req: Request): string {
+  const raw = req.headers.get(EXP_AUTH_TOKEN_HEADER)?.trim() ?? "";
+  if (!raw) return "";
+  return raw.replace(/^Bearer\s+/i, "").trim();
+}
+
+/**
+ * Resolve PAT for Optimizely API calls.
+ * Priority: ExpAuthToken header → form body token → Authorization Bearer → .env
+ */
 export function resolveOptimizelyToken(
   req: Request,
-  body: Record<string, unknown>,
+  body: Record<string, unknown> = {},
 ): string {
-  const headerAuth = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "")?.trim();
+  const expAuth = getExpAuthTokenHeader(req);
+  if (expAuth) return expAuth;
+
   const bodyToken = typeof body.token === "string" ? body.token.trim() : "";
-  return bodyToken || headerAuth || getOptimizelyEnvToken() || "";
+  if (bodyToken) return bodyToken;
+
+  const headerAuth = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "")?.trim();
+  if (headerAuth) return headerAuth;
+
+  return getOptimizelyEnvToken() || "";
 }

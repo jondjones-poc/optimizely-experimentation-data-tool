@@ -8,7 +8,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Optimizely Experimentation Data Helper",
+  title: "Optimizely",
   description:
     "Load an Optimizely experiment and send batched demo visitors to logx for Results-page testing.",
   icons: {

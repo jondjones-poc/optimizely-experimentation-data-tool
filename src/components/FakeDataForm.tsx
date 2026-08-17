@@ -834,7 +834,7 @@ export function FakeDataForm() {
     let cancelled = false;
     fetch("/api/env-token")
       .then((r) => r.json())
-      .then((d: { token?: string | null }) => {
+      .then((d: { token?: string | null; source?: string | null }) => {
         if (cancelled || !d?.token) return;
         setToken((prev) => (prev.trim() ? prev : d.token!));
       })
@@ -1775,13 +1775,6 @@ export function FakeDataForm() {
 
   return (
     <div className="opt-page">
-      <header>
-        <h1 className="opt-page-title">Experimentation Data Helper</h1>
-        <p className="opt-page-subtitle">
-          Load experiments and send demo visitor data to logx for Results-page testing.
-        </p>
-      </header>
-
       <section className="opt-card space-y-4">
         <label className="flex flex-col gap-1 text-sm">
           <span className="opt-label">1. Optimizely API token</span>
@@ -1805,6 +1798,10 @@ export function FakeDataForm() {
               spellCheck={false}
             />
           </div>
+          <p className="opt-hint">
+            Proxy/browser header <span className="opt-code">ExpAuthToken</span> wins over
+            this field and <span className="opt-code">.env.local</span>.
+          </p>
         </label>
 
         <div className="flex flex-col gap-2 text-sm">

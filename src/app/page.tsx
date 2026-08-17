@@ -20,7 +20,6 @@ export default function Home() {
             width={168}
             height={36}
           />
-          <span className="opt-brand-tagline">You&apos;re free to grow</span>
         </div>
       </header>
       <FakeDataForm />

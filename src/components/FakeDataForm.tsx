@@ -836,7 +836,10 @@ export function FakeDataForm() {
       .then((r) => r.json())
       .then((d: { token?: string | null; source?: string | null }) => {
         if (cancelled || !d?.token) return;
-        setToken((prev) => (prev.trim() ? prev : d.token!));
+        // ExpAuthToken (e.g. Chrome extension) always fills the field; env only if empty.
+        setToken((prev) =>
+          d.source === "ExpAuthToken" ? d.token! : prev.trim() ? prev : d.token!,
+        );
       })
       .catch(() => {});
     return () => {
@@ -1798,10 +1801,6 @@ export function FakeDataForm() {
               spellCheck={false}
             />
           </div>
-          <p className="opt-hint">
-            Proxy/browser header <span className="opt-code">ExpAuthToken</span> wins over
-            this field and <span className="opt-code">.env.local</span>.
-          </p>
         </label>
 
         <div className="flex flex-col gap-2 text-sm">

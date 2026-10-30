@@ -9,7 +9,10 @@ export type ControlTreatmentPair = {
 
 export type TrafficMode = "balanced" | "all_treatment";
 
-/** Pick variation for simulated logx traffic (50/50 control vs treatment, or 100% treatment). */
+/**
+ * Pick variation for simulated logx traffic: an even split across every variation (balanced), or
+ * 100% treatment. onControl is false for every non-control arm, so extra arms use treatment rates.
+ */
 export function pickSimulationVariation(
   variations: VariationInfo[],
   mode: TrafficMode,
@@ -18,8 +21,8 @@ export function pickSimulationVariation(
   if (mode === "all_treatment") {
     return { variation: treatment, onControl: false };
   }
-  const onControl = Math.random() < 0.5;
-  return { variation: onControl ? control : treatment, onControl };
+  const variation = variations[Math.floor(Math.random() * variations.length)] ?? control;
+  return { variation, onControl: variation.variation_id === control.variation_id };
 }
 
 /** Original/control vs challenger; defaults to first variation as control if unnamed. */

@@ -693,6 +693,7 @@ export function FakeDataForm() {
       ? savedRef.current.picks.campaignId
       : "",
   );
+  const failedCampaignLoad = useRef("");
   const sendAbortRef = useRef<AbortController | null>(null);
 
   const resetAfterProjectIdChange = useCallback(() => {
@@ -977,15 +978,18 @@ export function FakeDataForm() {
           body: JSON.stringify({
             token: token.trim() || undefined,
             campaignId: cid.trim(),
+            projectId: projectId.trim() || undefined,
           }),
         });
         const data = (await res.json()) as { experiments?: NamedEntity[]; error?: string };
         if (!res.ok) {
+          failedCampaignLoad.current = cid.trim();
           setLoadError(data.error ?? `HTTP ${res.status}`);
           setExperiments([]);
           setExperimentId("");
           return;
         }
+        failedCampaignLoad.current = "";
         const list = data.experiments ?? [];
         setExperiments(list);
         setExperimentId((current) =>
@@ -1006,7 +1010,7 @@ export function FakeDataForm() {
         setBusy(null);
       }
     },
-    [token],
+    [token, projectId],
   );
 
   const pickProjectExperiment = useCallback(
@@ -1049,7 +1053,7 @@ export function FakeDataForm() {
         setBusy(null);
       }
     },
-    [token],
+    [token, projectId],
   );
 
   useEffect(() => {
@@ -1062,6 +1066,7 @@ export function FakeDataForm() {
       lastLoadedCampaign.current = "";
       return;
     }
+    if (failedCampaignLoad.current === cid) return;
     if (lastLoadedCampaign.current === cid && experiments.some((e) => e.id)) return;
     lastLoadedCampaign.current = cid;
     void loadExperimentsForCampaign(cid);
@@ -1723,7 +1728,9 @@ export function FakeDataForm() {
       : null;
   const totalVisitors = Math.max(0, Math.floor(Number(visitorCount) || 0));
   const treatmentVisitors =
-    trafficMode === "all_treatment" ? totalVisitors : Math.floor(totalVisitors / 2);
+    trafficMode === "all_treatment"
+      ? totalVisitors
+      : totalVisitors - Math.floor(totalVisitors / Math.max(1, loaded?.variations.length ?? 2));
 
   const copyValidationDetails = useCallback(async () => {
     if (!loaded) return;
@@ -1757,6 +1764,161 @@ export function FakeDataForm() {
     totalVisitors,
   ]);
 
+  const [configCopied, setConfigCopied] = useState(false);
+  const copyConfiguration = useCallback(async () => {
+    const project = accountProjects.find((p) => p.id === projectId.trim());
+    const lines = [
+      "Optimizely experimentation tool configuration",
+      `Generated: ${new Date().toISOString()}`,
+      "",
+      "Choose a project",
+      `Project: ${project ? `${project.name} (${project.id})` : projectId.trim() || "—"}`,
+      `Manual IDs mode: ${manualIds}`,
+      `Discovery mode: ${discoveryMode ?? "—"}`,
+      `Picker kind: ${pickerKind ?? "—"}`,
+      "",
+      "3. Experiments & Personalisation Campaigns",
+      `Selected campaign ID: ${campaignId.trim() || "—"}`,
+      `Selected campaign type: ${selectedCampaignRow?.type ?? "—"}`,
+      `Campaign options (${campaigns.length}):`,
+      ...campaigns.map((c) => `  ${c.id} | ${c.name} | ${c.type ?? "—"}`),
+      "",
+      "4. Experiment",
+      `Selected experiment ID: ${experimentId.trim() || "—"}`,
+      `Experiment options for campaign (${experiments.length}):`,
+      ...experiments.map((e) => `  ${e.id} | ${e.name}`),
+      `Project-level experiment options (${projectExperiments.length}):`,
+      ...projectExperiments.map((e) => `  ${e.id} | ${e.name}`),
+      "",
+      `Last error: ${loadError ?? "—"}`,
+      `Project list error: ${projectListError ?? "—"}`,
+    ];
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setConfigCopied(true);
+    setTimeout(() => setConfigCopied(false), 2000);
+  }, [
+    accountProjects,
+    projectId,
+    manualIds,
+    discoveryMode,
+    pickerKind,
+    campaignId,
+    selectedCampaignRow,
+    campaigns,
+    experimentId,
+    experiments,
+    projectExperiments,
+    loadError,
+    projectListError,
+  ]);
+
+  const downloadConfiguration = useCallback(() => {
+    const project = accountProjects.find((p) => p.id === projectId.trim());
+    const config = {
+      format: "optimizely-experimentation-config",
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      project: { id: projectId.trim(), name: project?.name ?? "" },
+      campaign: {
+        id: campaignId.trim(),
+        name: selectedCampaignRow?.name ?? "",
+        type: selectedCampaignRow?.type ?? "",
+      },
+      experiment: {
+        id: experimentId.trim(),
+        name: experiments.find((e) => e.id === experimentId.trim())?.name ?? "",
+      },
+      campaigns,
+      experiments,
+      settings: { visitorCount, revenuePerConversion, trafficMode },
+    };
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `optimizely-config-${experimentId.trim() || "experiment"}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [
+    accountProjects,
+    projectId,
+    campaignId,
+    selectedCampaignRow,
+    experimentId,
+    experiments,
+    campaigns,
+    visitorCount,
+    revenuePerConversion,
+    trafficMode,
+  ]);
+
+  const [pendingImportExperiment, setPendingImportExperiment] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+
+  const importConfiguration = useCallback(async (file: File) => {
+    setLoadError(null);
+    try {
+      const cfg = JSON.parse(await file.text()) as {
+        format?: string;
+        project?: { id?: string; name?: string };
+        campaign?: { id?: string; name?: string; type?: string };
+        experiment?: { id?: string; name?: string };
+        campaigns?: CampaignOption[];
+        experiments?: NamedEntity[];
+        settings?: { visitorCount?: string; revenuePerConversion?: string; trafficMode?: TrafficMode };
+      };
+      if (cfg.format !== "optimizely-experimentation-config") {
+        throw new Error("Not an Optimizely experimentation config file.");
+      }
+      const pid = String(cfg.project?.id ?? "").trim();
+      const cid = String(cfg.campaign?.id ?? "").trim();
+      const eid = String(cfg.experiment?.id ?? "").trim();
+      if (!pid || !eid) throw new Error("Config is missing a project or experiment ID.");
+
+      setManualIds(false);
+      setAccountProjects((prev) =>
+        prev.some((p) => p.id === pid)
+          ? prev
+          : [...prev, { id: pid, name: cfg.project?.name || `Project ${pid}` }],
+      );
+      const campaignList: CampaignOption[] = cfg.campaigns?.length
+        ? cfg.campaigns
+        : cid
+          ? [{ id: cid, name: cfg.campaign?.name || `Campaign ${cid}`, type: cfg.campaign?.type }]
+          : [];
+      const experimentList: NamedEntity[] = cfg.experiments?.length
+        ? cfg.experiments
+        : [{ id: eid, name: cfg.experiment?.name || `Experiment ${eid}` }];
+      setCampaigns(campaignList);
+      setExperiments(experimentList);
+      setProjectExperiments([]);
+      lastAutoLoadedProject.current = pid;
+      lastLoadedCampaign.current = cid;
+      failedCampaignLoad.current = "";
+      setProjectId(pid);
+      setCampaignId(cid);
+      setExperimentId(eid);
+      setAfterDiscovery(true);
+      setPickerKind("campaign_chain");
+      setDiscoveryMode("list");
+      setLoaded(null);
+      setSendLog([]);
+      if (cfg.settings?.visitorCount) setVisitorCount(cfg.settings.visitorCount);
+      if (cfg.settings?.revenuePerConversion) setRevenuePerConversion(cfg.settings.revenuePerConversion);
+      if (cfg.settings?.trafficMode) setTrafficMode(cfg.settings.trafficMode);
+      setPendingImportExperiment(eid);
+    } catch (e) {
+      setLoadError(e instanceof Error ? `Import failed: ${e.message}` : "Import failed");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!pendingImportExperiment) return;
+    if (experimentId.trim() !== pendingImportExperiment || busy !== null) return;
+    setPendingImportExperiment(null);
+    void loadExperimentDetails();
+  }, [pendingImportExperiment, experimentId, busy, loadExperimentDetails]);
+
   const sendDisabledReason = (() => {
     if (busy && busy !== "send") return "Wait for the current step to finish loading.";
     if (busy === "send") return "Populating…";
@@ -1778,6 +1940,30 @@ export function FakeDataForm() {
 
   return (
     <div className="opt-page">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) void importConfiguration(file);
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => importInputRef.current?.click()}
+          disabled={busy !== null}
+          className="opt-btn-secondary"
+        >
+          Import configuration
+        </button>
+        <span className="opt-hint">Load a downloaded config JSON and fetch the experiment in one step.</span>
+      </div>
+      {loadError?.startsWith("Import failed") && <p className="opt-alert-error">{loadError}</p>}
+
       <section className="opt-card space-y-4">
         <label className="flex flex-col gap-1 text-sm">
           <span className="opt-label">1. Optimizely API token</span>
@@ -2104,7 +2290,7 @@ export function FakeDataForm() {
                         ? "control"
                         : controlTreatment?.treatment.variation_id === v.variation_id
                           ? "treatment"
-                          : "not used in A/B sim";
+                          : "treatment (extra arm)";
                     return (
                       <li key={v.variation_id}>
                         {v.name}{" "}
@@ -2338,7 +2524,7 @@ export function FakeDataForm() {
                         ? "control"
                         : controlTreatment?.treatment.variation_id === v.variation_id
                           ? "treatment"
-                          : "not used in A/B sim";
+                          : "treatment (extra arm)";
                     return (
                       <li key={v.variation_id}>
                         {v.name}{" "}
@@ -2547,6 +2733,20 @@ export function FakeDataForm() {
           )}
         </section>
       )}
+
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => void copyConfiguration()} className="opt-btn-secondary">
+          {configCopied ? "Copied!" : "Copy configuration"}
+        </button>
+        <button
+          type="button"
+          onClick={downloadConfiguration}
+          disabled={!projectId.trim() || !experimentId.trim()}
+          className="opt-btn-secondary"
+        >
+          Download configuration (JSON)
+        </button>
+      </div>
 
       <NewProjectModal
         open={newProjectModalOpen}

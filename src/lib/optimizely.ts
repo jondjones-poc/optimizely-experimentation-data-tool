@@ -796,10 +796,83 @@ export async function getExperimentMeta(
 }
 
 /** GET /v2/experiments?campaign_id= — either project_id or campaign_id is required; we scope by campaign. */
+const FLAGS_API_BASE = "https://api.optimizely.com/flags/v1";
+
+type FxRule = { name?: string; key?: string; layer_id?: number; layer_experiment_id?: number };
+type FxList = { items?: { key?: string; archived?: boolean; environments?: Record<string, unknown> }[]; next_url?: string; rules?: Record<string, FxRule> };
+
+/**
+ * Feature Experimentation: campaigns are rule layers. Walk every flag/environment ruleset and
+ * return the rules whose layer_id matches; layer_experiment_id is the experiment ID used by v2 + logx.
+ */
+async function fetchFxExperimentsForCampaign(
+  token: string,
+  projectId: string,
+  campaignId: string,
+): Promise<{ experiments: NamedEntity[] } | { error: string; status?: number }> {
+  applyInsecureTlsIfConfigured();
+  const headers = { Authorization: `Bearer ${token}` };
+  const getJson = async (path: string): Promise<{ ok: true; data: FxList } | { ok: false; status: number; message: string }> => {
+    try {
+      const res = await fetch(`${FLAGS_API_BASE}${path}`, { headers, next: { revalidate: 0 } });
+      const text = await res.text();
+      if (!res.ok) return { ok: false, status: res.status, message: text.slice(0, 500) || res.statusText };
+      return { ok: true, data: JSON.parse(text) };
+    } catch (err) {
+      return { ok: false, status: 502, message: formatFetchError(err) };
+    }
+  };
+
+  const flagKeys: { key: string; envs: string[] }[] = [];
+  let next: string | null = `/projects/${encodeURIComponent(projectId)}/flags?per_page=100`;
+  for (let i = 0; next && i < 50; i++) {
+    const r = await getJson(next);
+    if (!r.ok) return { error: r.message, status: r.status };
+    for (const f of r.data.items ?? []) {
+      if (f.archived || !f.key) continue;
+      flagKeys.push({ key: f.key, envs: Object.keys(f.environments ?? {}) });
+    }
+    next = typeof r.data.next_url === "string" && r.data.next_url ? r.data.next_url : null;
+  }
+
+  const found = new Map<string, NamedEntity>();
+  await Promise.all(
+    flagKeys.flatMap((f) =>
+      f.envs.map(async (env) => {
+        const r = await getJson(
+          `/projects/${encodeURIComponent(projectId)}/flags/${encodeURIComponent(f.key)}/environments/${encodeURIComponent(env)}/ruleset`,
+        );
+        if (!r.ok) return;
+        for (const rule of Object.values((r.data.rules ?? {}) as Record<string, FxRule>)) {
+          if (rule.layer_experiment_id == null || String(rule.layer_id ?? "") !== campaignId) continue;
+          const id = String(rule.layer_experiment_id);
+          found.set(id, { id, name: String(rule.name ?? rule.key ?? `Experiment ${id}`) });
+        }
+      }),
+    ),
+  );
+  return { experiments: [...found.values()].sort(sortByName) };
+}
+
 export async function fetchExperimentsForCampaign(
   token: string,
   campaignId: string,
+  projectId?: string,
 ): Promise<{ experiments: NamedEntity[] } | { error: string; status?: number }> {
+  // /experiments requires project_id; campaign_id alone is rejected with 400.
+  if (projectId) {
+    const out = await fetchAllExperimentsForProject(token, projectId);
+    if ("error" in out) return out;
+    const experiments: NamedEntity[] = [];
+    for (const e of out.rows) {
+      if (e.id == null || String(e.campaign_id ?? "") !== campaignId) continue;
+      experiments.push({ id: String(e.id), name: String(e.name ?? `Experiment ${e.id}`) });
+    }
+    experiments.sort(sortByName);
+    if (experiments.length > 0) return { experiments };
+    // Feature Experimentation: the legacy list is empty; experiments live as flag rules.
+    return fetchFxExperimentsForCampaign(token, projectId, campaignId);
+  }
   const perPage = 100;
   const all: NamedEntity[] = [];
   for (let page = 1; page <= 50; page++) {

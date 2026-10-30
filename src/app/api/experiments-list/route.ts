@@ -26,7 +26,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "campaignId is required" }, { status: 400 });
   }
 
-  const out = await fetchExperimentsForCampaign(token, campaignId);
+  const out = await fetchExperimentsForCampaign(
+    token,
+    campaignId,
+    String(body.projectId ?? "").trim() || undefined,
+  );
   if ("error" in out) {
     return NextResponse.json({ error: out.error }, { status: out.status ?? 502 });
   }
